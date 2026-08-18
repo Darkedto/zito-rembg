@@ -25,7 +25,7 @@ RUN pip install --no-cache-dir \
 # hosting no tiene salida a internet.
 ENV U2NET_HOME=/opt/modelos
 RUN mkdir -p /opt/modelos \
- && python -c "from rembg import new_session; new_session('isnet-general-use')" \
+ && python -c "from rembg import new_session; new_session('u2netp')" \
  && chmod -R a+rX /opt/modelos
 
 WORKDIR /app

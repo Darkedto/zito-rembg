@@ -15,9 +15,13 @@ fondo transparente**. Lo usa la app de tiendas (`zitosmartbuy.html`) a través
 de la Edge Function `quitar-fondo` de Supabase — el celular nunca habla
 directo con este servidor, así que la URL y el token viven como secretos.
 
-Modelo por defecto: **`isnet-general-use`** (ISNet/U²-Net, licencia
-permisiva — uso comercial libre, a diferencia de BRIA RMBG, que es
-no-comercial).
+Modelo por defecto: **`u2netp`** (U²-Net liviano, licencia permisiva — uso
+comercial libre, a diferencia de BRIA RMBG, que es no-comercial). Se eligió
+la versión liviana a propósito: los planes gratis de Render/Hugging Face dan
+**512 MB de RAM**, y el modelo grande (`isnet-general-use`) por sí solo se
+come esa memoria al cargar — el deploy muere con "Ran out of memory". Si en
+algún momento se sube a un VPS propio o un plan con más RAM, `u2net` o
+`isnet-general-use` (`REMBG_MODELO`) dan mejor calidad de recorte.
 
 ## Probarlo en tu computadora
 
@@ -58,7 +62,7 @@ Si `REMBG_TOKEN` está definido, hay que mandar la cabecera `X-Zito-Token`.
 | Variable | Default | Para qué |
 |---|---|---|
 | `PORT` | 7860 | puerto (Cloud Run lo pone en 8080 solo) |
-| `REMBG_MODELO` | `isnet-general-use` | `u2net`, `u2netp` (más liviano y rápido) |
+| `REMBG_MODELO` | `u2netp` | `u2net`, `isnet-general-use` (mejor calidad, pide ~1 GB+ de RAM) |
 | `REMBG_TOKEN` | *(vacío)* | exige `X-Zito-Token` |
 | `REMBG_MAX_PX` | 1400 | lado máximo antes de procesar |
 | `REMBG_MAX_BYTES` | 8388608 | tope del archivo |
