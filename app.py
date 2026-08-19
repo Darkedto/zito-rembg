@@ -60,7 +60,28 @@ app.add_middleware(
 )
 
 # Se carga UNA vez al arrancar: la primera foto no paga la carga del modelo.
-sesion = new_session(MODELO, sess_opts=_SESS_OPTS)
+#
+# OJO (bug real, 2026-08-18): `new_session(MODELO, sess_opts=_SESS_OPTS)`
+# funciona en algunas versiones de rembg y en otras revienta con
+# "BaseSession.__init__() got multiple values for argument 'sess_opts'"
+# — depende de cómo esa versión reenvíe el argumento por dentro, y como el
+# Dockerfile no fija la versión exacta, Render puede bajar una distinta a
+# la que se probó localmente. Para no depender de ese detalle interno, se
+# crea la sesión con los valores por defecto y se le arma de nuevo el
+# `inner_session` a mano, con NUESTRAS opciones de memoria — usando solo
+# `download_models()` y `.inner_session`, que son estables entre versiones.
+sesion = new_session(MODELO)
+try:
+    _modelo_path = str(type(sesion).download_models())
+    sesion.inner_session = ort.InferenceSession(
+        _modelo_path,
+        sess_options=_SESS_OPTS,
+        providers=sesion.inner_session.get_providers(),
+    )
+except Exception:
+    # Si esto deja de funcionar en una versión futura, seguimos con la
+    # sesión por defecto (pide más memoria, pero no tira el servidor).
+    pass
 
 
 @app.get("/")

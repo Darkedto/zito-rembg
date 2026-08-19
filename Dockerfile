@@ -15,7 +15,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
  && rm -rf /var/lib/apt/lists/*
 
 RUN pip install --no-cache-dir \
-      "rembg[cpu]>=2.0,<3" \
+      "rembg[cpu]==2.0.81" \
       "fastapi>=0.110,<1" \
       "uvicorn[standard]>=0.29,<1" \
       "pillow>=10,<12"
