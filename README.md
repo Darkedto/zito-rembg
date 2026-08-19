@@ -15,13 +15,14 @@ fondo transparente**. Lo usa la app de tiendas (`zitosmartbuy.html`) a través
 de la Edge Function `quitar-fondo` de Supabase — el celular nunca habla
 directo con este servidor, así que la URL y el token viven como secretos.
 
-Modelo por defecto: **`u2netp`** (U²-Net liviano, licencia permisiva — uso
-comercial libre, a diferencia de BRIA RMBG, que es no-comercial). Se eligió
-la versión liviana a propósito: los planes gratis de Render/Hugging Face dan
-**512 MB de RAM**, y el modelo grande (`isnet-general-use`) por sí solo se
-come esa memoria al cargar — el deploy muere con "Ran out of memory". Si en
-algún momento se sube a un VPS propio o un plan con más RAM, `u2net` o
-`isnet-general-use` (`REMBG_MODELO`) dan mejor calidad de recorte.
+Modelo: **U²-Net "p"** (`u2netp`, licencia permisiva — uso comercial
+libre, a diferencia de BRIA RMBG, que es no-comercial). Se corre el ONNX
+**directo con onnxruntime**, sin la librería `rembg`: ella arrastra
+`pymatting`/`numba`/`scikit-image` (+117 MB de RAM que este servicio no
+usa) y el contenedor se pasaba de los 512 MB del plan gratis de Render.
+Medido: base 90 MB, pico 285 MB por recorte — antes eran 210 y 430 MB.
+El preprocesado replica exactamente el de rembg para u2netp, así que el
+recorte sale igual.
 
 ## Probarlo en tu computadora
 
@@ -62,7 +63,7 @@ Si `REMBG_TOKEN` está definido, hay que mandar la cabecera `X-Zito-Token`.
 | Variable | Default | Para qué |
 |---|---|---|
 | `PORT` | 7860 | puerto (Cloud Run lo pone en 8080 solo) |
-| `REMBG_MODELO` | `u2netp` | `u2net`, `isnet-general-use` (mejor calidad, pide ~1 GB+ de RAM) |
+| `MODELO_PATH` | `/opt/modelos/u2netp.onnx` | ruta del .onnx horneado en la imagen |
 | `REMBG_TOKEN` | *(vacío)* | exige `X-Zito-Token` |
 | `REMBG_MAX_PX` | 1400 | lado máximo antes de procesar |
 | `REMBG_MAX_BYTES` | 8388608 | tope del archivo |

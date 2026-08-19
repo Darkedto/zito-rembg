@@ -1,43 +1,46 @@
 # ════════════════════════════════════════════════════════════════════
-# Zito SmartBuy — recorte de fondo con rembg (CPU, sin GPU)
+# Zito SmartBuy — recorte de fondo (U²-Net "p" en ONNX, CPU)
 #
-# Sirve igual en Hugging Face Spaces (Docker), Google Cloud Run, Fly.io o
-# un VPS: escucha en $PORT y por defecto en 7860, que es el que espera HF.
+# Sin la libreria `rembg`: solo onnxruntime + numpy + pillow. Ver el
+# comentario largo al inicio de app.py — rembg arrastraba pymatting/numba/
+# scikit-image (+117 MB de RAM que no se usan) y el contenedor se pasaba
+# de los 512 MB del plan gratis de Render.
+#
+# Escucha en $PORT (Render lo define solo; 7860 por defecto).
 #
 #   docker build -t zito-rembg .
 #   docker run --rm -p 7860:7860 zito-rembg
 # ════════════════════════════════════════════════════════════════════
 FROM python:3.11-slim
 
-# libgl1 / libglib: los pide opencv, que rembg usa para limpiar la máscara.
-RUN apt-get update && apt-get install -y --no-install-recommends \
-      libgl1 libglib2.0-0 \
- && rm -rf /var/lib/apt/lists/*
-
-# Versiones exactas, todas verificadas juntas (2026-08-18). Se fijan a
-# proposito: con rangos abiertos el build no es reproducible y ya nos
-# mordio dos veces - una version nueva de rembg cambio como recibe
-# `sess_opts` (TypeError al arrancar) y otra subio el minimo de pillow a
-# 12.1, chocando con el "pillow<12" que estaba puesto aca (el build moria
-# con "dependency conflicts"). NO poner rango en pillow: la version la
-# decide rembg, que es quien la necesita.
+# Versiones exactas: con rangos abiertos el build no es reproducible y ya
+# nos mordio (una version nueva subio el minimo de pillow y el build murio
+# con "dependency conflicts").
 RUN pip install --no-cache-dir \
-      "rembg[cpu]==2.0.81" \
+      "onnxruntime==1.29.0" \
+      "numpy==2.5.2" \
+      "pillow==12.3.0" \
       "fastapi==0.141.1" \
       "uvicorn[standard]==0.52.3"
 
-# El modelo queda HORNEADO en la imagen. Si se bajara en la primera
-# petición, el primer recorte tardaría un minuto y podría fallar si el
-# hosting no tiene salida a internet.
-ENV U2NET_HOME=/opt/modelos
-RUN mkdir -p /opt/modelos \
- && python -c "from rembg import new_session; new_session('u2netp')" \
- && chmod -R a+rX /opt/modelos
+# El modelo queda HORNEADO en la imagen (4.5 MB). Si se bajara en la
+# primera peticion, el primer recorte tardaria y dependeria de que el
+# hosting tenga salida a internet.
+ADD https://github.com/danielgatis/rembg/releases/download/v0.0.0/u2netp.onnx /opt/modelos/u2netp.onnx
+RUN chmod -R a+rX /opt/modelos
+ENV MODELO_PATH=/opt/modelos/u2netp.onnx
+
+# Menos memoria en Linux: glibc crea una "arena" de malloc por hilo y eso
+# infla el RSS; y las librerias numericas levantan pools de hilos que no
+# sirven de nada con la CPU del plan gratis.
+ENV MALLOC_ARENA_MAX=2
+ENV OMP_NUM_THREADS=1
+ENV OPENBLAS_NUM_THREADS=1
+ENV MKL_NUM_THREADS=1
 
 WORKDIR /app
 COPY app.py /app/app.py
 
-# Hugging Face Spaces corre el contenedor como el usuario 1000.
 RUN useradd -m -u 1000 zito || true
 USER 1000
 

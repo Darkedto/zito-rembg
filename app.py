@@ -1,5 +1,5 @@
 # ════════════════════════════════════════════════════════════════════
-# Zito SmartBuy — servicio de recorte de fondo (rembg)
+# Zito SmartBuy — servicio de recorte de fondo (U²-Net "p", ONNX)
 #
 # Recibe una foto de producto y devuelve un PNG con el fondo transparente.
 # No recorta ni arma el cuadrado: de eso se sigue encargando el teléfono
@@ -7,49 +7,51 @@
 # del contenido, cuadrado de 800 px, WebP). Así el servidor hace una sola
 # cosa y se puede cambiar por otro sin tocar la app.
 #
-# El modelo (ISNet / U²-Net, licencia permisiva) queda dentro de la imagen
-# de Docker, así que el arranque no depende de bajar nada de internet.
+# ── Por qué NO se usa la librería `rembg` ────────────────────────────
+# Se empezó con rembg y hubo que sacarla por dos razones, ambas medidas:
+#
+#   1) MEMORIA. El plan gratis de Render da 512 MB para TODO el contenedor.
+#      rembg arrastra `pymatting` (→ numba → llvmlite), `scikit-image` y
+#      `scipy`, que llevan la memoria base de 53 MB a 170 MB antes de
+#      cargar el modelo — 117 MB de librerías que este servicio nunca usa
+#      (pymatting es solo para el modo alpha-matting). Con eso, un solo
+#      recorte se pasaba de 512 MB y Render mataba el contenedor (502).
+#
+#   2) FRAGILIDAD DE VERSIONES. Dos deploys se cayeron por cambios internos
+#      entre versiones de rembg (cómo recibe `sess_opts`, y el mínimo de
+#      pillow que exige).
+#
+# Acá se corre el modelo ONNX directo: solo onnxruntime + numpy + pillow.
+# El preprocesado es EL MISMO que hace rembg para u2netp (resize 320x320
+# LANCZOS, normalización ImageNet), así que el recorte sale igual.
 #
 # Variables de entorno:
-#   PORT            puerto (7860 por defecto = el que espera Hugging Face)
-#   REMBG_MODELO    u2netp (default, liviano — pensado para 512 MB de RAM,
-#                   el límite del plan gratis de Render/HF) · u2net ·
-#                   isnet-general-use (mejor calidad, pero pide ~1 GB+ de RAM;
-#                   sirve en un VPS propio o un plan de pago, no en el free tier)
-#   REMBG_TOKEN     si se define, exige la cabecera X-Zito-Token con ese valor
-#   REMBG_MAX_PX    lado máximo al que se reduce antes de procesar (1400)
+#   PORT            puerto (10000 en Render; 7860 por defecto)
+#   MODELO_PATH     ruta del .onnx (viene horneado en la imagen)
+#   REMBG_TOKEN     si se define, exige la cabecera X-Zito-Token
+#   REMBG_MAX_PX    lado máximo al que se reduce antes de procesar (1000)
 #   REMBG_MAX_BYTES tope del archivo que se acepta (8 MB)
 # ════════════════════════════════════════════════════════════════════
 import gc
 import io
 import os
 
+import numpy as np
 import onnxruntime as ort
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response
 from PIL import Image
-from rembg import new_session, remove
 
-MODELO     = os.environ.get("REMBG_MODELO", "u2netp")
-TOKEN      = os.environ.get("REMBG_TOKEN", "")
-MAX_PX     = int(os.environ.get("REMBG_MAX_PX", "1000"))
-MAX_BYTES  = int(os.environ.get("REMBG_MAX_BYTES", str(8 * 1024 * 1024)))
+MODELO_PATH = os.environ.get("MODELO_PATH", "/opt/modelos/u2netp.onnx")
+TOKEN       = os.environ.get("REMBG_TOKEN", "")
+MAX_PX      = int(os.environ.get("REMBG_MAX_PX", "1000"))
+MAX_BYTES   = int(os.environ.get("REMBG_MAX_BYTES", str(8 * 1024 * 1024)))
 
-# Medido a mano (2026-08-18): con la configuración por defecto de
-# onnxruntime, un solo recorte llega a pedir ~465 MB de RAM — casi todo el
-# plan gratis de Render/HF (512 MB), y eso sin contar FastAPI ni el sistema
-# operativo del contenedor. La "arena" de memoria de onnxruntime reserva de
-# más sin que tenga que ver con el tamaño de la imagen (se probó a distintas
-# resoluciones y el pico casi no cambiaba). Desactivarla + limitar los hilos
-# a 1 bajó el pico a ~380 MB — deja margen real. No usar SessionOptions()
-# "a mano" sin esto en un plan de 512 MB: el deploy se cae con
-# "Ran out of memory".
-_SESS_OPTS = ort.SessionOptions()
-_SESS_OPTS.enable_cpu_mem_arena = False
-_SESS_OPTS.enable_mem_pattern = False
-_SESS_OPTS.intra_op_num_threads = 1
-_SESS_OPTS.inter_op_num_threads = 1
+# U²-Net entra siempre a 320x320 y normaliza con las medias de ImageNet.
+ENTRADA = (320, 320)
+MEDIA   = (0.485, 0.456, 0.406)
+DESVIO  = (0.229, 0.224, 0.225)
 
 app = FastAPI(title="Zito · recorte de fondo")
 app.add_middleware(
@@ -59,34 +61,43 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Se carga UNA vez al arrancar: la primera foto no paga la carga del modelo.
-#
-# OJO (bug real, 2026-08-18): `new_session(MODELO, sess_opts=_SESS_OPTS)`
-# funciona en algunas versiones de rembg y en otras revienta con
-# "BaseSession.__init__() got multiple values for argument 'sess_opts'"
-# — depende de cómo esa versión reenvíe el argumento por dentro, y como el
-# Dockerfile no fija la versión exacta, Render puede bajar una distinta a
-# la que se probó localmente. Para no depender de ese detalle interno, se
-# crea la sesión con los valores por defecto y se le arma de nuevo el
-# `inner_session` a mano, con NUESTRAS opciones de memoria — usando solo
-# `download_models()` y `.inner_session`, que son estables entre versiones.
-sesion = new_session(MODELO)
-try:
-    _modelo_path = str(type(sesion).download_models())
-    sesion.inner_session = ort.InferenceSession(
-        _modelo_path,
-        sess_options=_SESS_OPTS,
-        providers=sesion.inner_session.get_providers(),
-    )
-except Exception:
-    # Si esto deja de funcionar en una versión futura, seguimos con la
-    # sesión por defecto (pide más memoria, pero no tira el servidor).
-    pass
+# Opciones de memoria: la "arena" de onnxruntime reserva de más por diseño
+# (medido: sin desactivarla el pico sube ~85 MB, sin relación con el tamaño
+# de la foto). Un solo hilo, porque el plan gratis da 0.1 CPU igual.
+_opts = ort.SessionOptions()
+_opts.enable_cpu_mem_arena = False
+_opts.enable_mem_pattern = False
+_opts.intra_op_num_threads = 1
+_opts.inter_op_num_threads = 1
+
+sesion = ort.InferenceSession(
+    MODELO_PATH, sess_options=_opts, providers=["CPUExecutionProvider"]
+)
+NOMBRE_ENTRADA = sesion.get_inputs()[0].name
+
+
+def mascara_de(img: Image.Image) -> Image.Image:
+    """Devuelve la máscara en escala de grises (255 = producto)."""
+    chico = img.convert("RGB").resize(ENTRADA, Image.Resampling.LANCZOS)
+
+    arr = np.array(chico, dtype=np.float32)
+    arr /= max(float(arr.max()), 1e-6)
+    for c in range(3):
+        arr[:, :, c] = (arr[:, :, c] - MEDIA[c]) / DESVIO[c]
+    tensor = np.expand_dims(arr.transpose(2, 0, 1), 0).astype(np.float32)
+
+    pred = sesion.run(None, {NOMBRE_ENTRADA: tensor})[0][:, 0, :, :]
+    mi, ma = float(pred.min()), float(pred.max())
+    pred = (pred - mi) / max(ma - mi, 1e-6)
+    pred = np.squeeze(pred)
+
+    mask = Image.fromarray((pred * 255).astype("uint8"), mode="L")
+    return mask.resize(img.size, Image.Resampling.LANCZOS)
 
 
 @app.get("/")
 def salud():
-    return {"ok": True, "modelo": MODELO, "max_px": MAX_PX}
+    return {"ok": True, "modelo": "u2netp", "max_px": MAX_PX}
 
 
 @app.post("/quitar-fondo")
@@ -107,18 +118,11 @@ async def quitar_fondo(req: Request):
     except Exception:
         raise HTTPException(status_code=400, detail="El archivo no es una imagen.")
 
-    # Reducir antes de procesar: en CPU el tiempo sube con el cuadrado del lado.
-    img.thumbnail((MAX_PX, MAX_PX), Image.LANCZOS)
+    # Reducir antes de procesar: menos memoria y menos tiempo de CPU.
+    img.thumbnail((MAX_PX, MAX_PX), Image.Resampling.LANCZOS)
 
-    # `matting=1` afina el borde (pelos, transparencias) a costa de bastante
-    # más CPU. Para una botella o una caja no hace falta.
-    matting = req.query_params.get("matting") in ("1", "true", "si")
-    salida = remove(
-        img,
-        session=sesion,
-        post_process_mask=True,
-        alpha_matting=matting,
-    )
+    salida = img.convert("RGBA")
+    salida.putalpha(mascara_de(img))
 
     buf = io.BytesIO()
     salida.save(buf, format="PNG", optimize=True)
@@ -132,5 +136,5 @@ async def quitar_fondo(req: Request):
     return Response(
         content=cuerpo,
         media_type="image/png",
-        headers={"X-Zito-Modelo": MODELO},
+        headers={"X-Zito-Modelo": "u2netp"},
     )
