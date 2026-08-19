@@ -11,11 +11,16 @@
 #   docker build -t zito-rembg .
 #   docker run --rm -p 7860:7860 zito-rembg
 # ════════════════════════════════════════════════════════════════════
-FROM python:3.11-slim
+# 3.12 y no 3.11: numpy 2.5.x exige Python >=3.12 (no publica wheel para
+# 3.11) y el build moria en el pip install. Si se cambia esta linea, hay
+# que revisar que las 5 versiones de abajo tengan wheel para ESA version
+# de Python — verificar en pypi.org, no en la maquina de uno, que casi
+# nunca corre la misma version que el contenedor.
+FROM python:3.12-slim
 
-# Versiones exactas: con rangos abiertos el build no es reproducible y ya
-# nos mordio (una version nueva subio el minimo de pillow y el build murio
-# con "dependency conflicts").
+# Versiones exactas, con wheel confirmado para cp312-linux: con rangos
+# abiertos el build no es reproducible y ya nos mordio (una version nueva
+# subio el minimo de pillow y el build murio con "dependency conflicts").
 RUN pip install --no-cache-dir \
       "onnxruntime==1.29.0" \
       "numpy==2.5.2" \
