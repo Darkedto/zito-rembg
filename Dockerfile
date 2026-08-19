@@ -14,11 +14,17 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       libgl1 libglib2.0-0 \
  && rm -rf /var/lib/apt/lists/*
 
+# Versiones exactas, todas verificadas juntas (2026-08-18). Se fijan a
+# proposito: con rangos abiertos el build no es reproducible y ya nos
+# mordio dos veces - una version nueva de rembg cambio como recibe
+# `sess_opts` (TypeError al arrancar) y otra subio el minimo de pillow a
+# 12.1, chocando con el "pillow<12" que estaba puesto aca (el build moria
+# con "dependency conflicts"). NO poner rango en pillow: la version la
+# decide rembg, que es quien la necesita.
 RUN pip install --no-cache-dir \
       "rembg[cpu]==2.0.81" \
-      "fastapi>=0.110,<1" \
-      "uvicorn[standard]>=0.29,<1" \
-      "pillow>=10,<12"
+      "fastapi==0.141.1" \
+      "uvicorn[standard]==0.52.3"
 
 # El modelo queda HORNEADO en la imagen. Si se bajara en la primera
 # petición, el primer recorte tardaría un minuto y podría fallar si el
